@@ -126,22 +126,65 @@ Display:
   -V, --version       show the version
 ```
 
-| Key | Action |
-| --- | --- |
-| Arrow keys, `WASD` or `HJKL` | d-pad |
-| `Z` | A button |
-| `X` | B button |
-| `Enter` | Start |
-| `Space` | Select |
-| `P` | pause / resume |
-| `R` | reset the machine |
-| `M` | mute / unmute |
-| `?` | controls |
-| `Q`, `Escape` or `Ctrl-C` | quit |
+### Controls
 
-A terminal reports key *presses* but never releases, so a key is held for a
-quarter second after you press it and then lets go. Tapping again holds it
-longer, which is enough to walk around with.
+The keyboard stands in for the Game Boy's buttons like this:
+
+```
+        Game Boy                               Keyboard
+  ┌──────────────────────┐
+  │  ┌────────────────┐  │
+  │  │                │  │
+  │  │     screen     │  │
+  │  │                │  │
+  │  └────────────────┘  │
+  │                      │
+  │    ▲                 │          ↑        W        K
+  │  ◀   ▶        (B)(A) │        ←   →    A   D    H   L      X  Z
+  │    ▼                 │          ↓        S        J
+  │                      │       arrows  or WASD  or HJKL    B  A
+  │   SELECT   START     │
+  │   [    ]   [    ]    │       Space     Enter
+  └──────────────────────┘
+```
+
+| Key | Game Boy | Notes |
+| --- | --- | --- |
+| Arrow keys, `W` `A` `S` `D`, or `H` `J` `K` `L` | d-pad | all three sets do the same thing |
+| `Z` | A | sits on the right, like A on the console |
+| `X` | B | |
+| `Enter` | Start | |
+| `Space` | Select | |
+| `P` | — | pause / resume the emulator |
+| `R` | — | reset the machine |
+| `M` | — | mute / unmute the sound |
+| `?` | — | show these controls on screen |
+| `Q`, `Escape` or `Ctrl-C` | — | quit |
+
+Letters work in either case. On Windows, `Home` and `End` also act as up and
+down.
+
+**Holding a button.** A terminal reports key *presses* but never releases,
+so each press holds the button for a quarter of a second (`KEYMAP_TAP_MS` in
+`src/keymap.h`) and then lets go. Pressing again before it lets go extends
+the hold, so a key held down on the keyboard, which auto-repeats, reads as
+a button held down on the console. Two different keys pressed close together
+are held at the same time, which is how diagonals and button combinations
+work.
+
+**Playing Tetris with it.** Press `Enter` to skip the copyright screen and
+again on the title screen for one player. On the menus, the d-pad moves the
+selection and `Enter` confirms: game type, then music, then the starting
+level. In the game:
+
+| Key | In Tetris |
+| --- | --- |
+| `←` `→` | move the piece |
+| `↓` | soft drop (hold it to keep falling) |
+| `Z` | rotate the piece |
+| `X` | rotate it the other way |
+| `Enter` | pause the game |
+| `Space` | show or hide the next piece |
 
 ### Fitting the window
 
