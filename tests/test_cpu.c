@@ -1231,7 +1231,46 @@ static void t_cpu_cb_memory_timings(void)
     fixture_destroy(&f);
 }
 
+/*
+ * The $80-$BF block is eight groups of eight: ADD, ADC, SUB, SBC, AND, XOR,
+ * OR, CP.  Each group is run once with A = $F0, B = $3C and carry set, so
+ * every operation leaves a different result behind.
+ */
+static void t_cpu_alu_register_groups(void)
+{
+    static const struct {
+        uint8_t op;
+        uint8_t a;
+        uint8_t f;
+    } cases[] = {
+        { 0x80, 0x2C, 0x10 },        /* ADD A,B: $F0 + $3C        */
+        { 0x88, 0x2D, 0x10 },        /* ADC A,B: + carry          */
+        { 0x90, 0xB4, 0x60 },        /* SUB B: low nibble borrows */
+        { 0x98, 0xB3, 0x60 },        /* SBC A,B: - carry          */
+        { 0xA0, 0x30, 0x20 },        /* AND B                     */
+        { 0xA8, 0xCC, 0x00 },        /* XOR B                     */
+        { 0xB0, 0xFC, 0x00 },        /* OR B                      */
+        { 0xB8, 0xF0, 0x60 },        /* CP B: A unchanged         */
+    };
+
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        Fixture f = fixture_create(0x8000, 0x00);
+        const uint8_t code[] = { cases[i].op };
+
+        fixture_load(&f, code, sizeof(code));
+        REG_A = 0xF0;
+        REG_B = 0x3C;
+        REG_F = 0x10;
+        CHECK_EQ(fixture_step(&f), 4);
+        CHECK_MSG(REG_A == cases[i].a && REG_F == cases[i].f,
+                  "op $%02X: expected A=$%02X F=$%02X, got A=$%02X F=$%02X",
+                  cases[i].op, cases[i].a, cases[i].f, REG_A, REG_F);
+        fixture_destroy(&f);
+    }
+}
+
 const TestCase cpu_tests[] = {
+    { "cpu", "alu register groups", t_cpu_alu_register_groups },
     { "cpu", "nop consumes four cycles", t_cpu_nop_consumes_four_cycles },
     { "cpu", "ld bc immediate", t_cpu_ld_bc_immediate },
     { "cpu", "ld pair round trip", t_cpu_ld_pair_round_trip },

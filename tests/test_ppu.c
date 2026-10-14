@@ -609,7 +609,7 @@ static void t_ppu_sprite_x_flip(void)
     gb_write(&f.gb, 0x8010, 0x80);
     gb_write(&f.gb, 0x8011, 0x00);
 
-    set_sprite(&f, 0, 16, 0, 1, 0x40); /* X flip */
+    set_sprite(&f, 0, 16, 0, 1, 0x20); /* X flip */
     gb_write(&f.gb, 0xFF40, 0x93);
     gb_write(&f.gb, 0xFF47, 0xE4);
     ppu_tick(&f.gb, 81);
@@ -634,7 +634,7 @@ static void t_ppu_sprite_y_flip(void)
     }
 
     /* Place it so the flipped row lands on screen line 0. */
-    set_sprite(&f, 0, 16, 0, 1, 0x20); /* Y flip */
+    set_sprite(&f, 0, 16, 0, 1, 0x40); /* Y flip */
     gb_write(&f.gb, 0xFF40, 0x93);
     gb_write(&f.gb, 0xFF47, 0xE4);
     ppu_tick(&f.gb, 81);
@@ -934,7 +934,75 @@ static void t_ppu_run_frame_returns_on_vblank(void)
     fixture_destroy(&f);
 }
 
+/* OAM positions are unsigned: Y and X of 128 and up are the bottom and
+ * right of the screen, not negative coordinates. */
+static void t_ppu_sprite_low_and_right_on_screen(void)
+{
+    Fixture f = fixture_create(0x8000, 0x00);
+    fixture_video_accessible(&f);
+
+    load_solid_tile(&f.gb, 1, 3);
+    load_solid_tile(&f.gb, 2, 0);
+    load_map(&f.gb, 0x9800, 2);
+
+    set_sprite(&f, 0, 136, 120, 1, 0x00);
+    gb_write(&f.gb, 0xFF40, 0x93);
+    gb_write(&f.gb, 0xFF47, 0xE4);
+    gb_write(&f.gb, 0xFF48, 0xE4);
+    ppu_tick(&f.gb, 120 * 456 + 81);
+
+    CHECK_EQ(pixel(&f, 136, 120), f.gb.ppu.palette[3]);
+    CHECK_EQ(pixel(&f, 143, 120), f.gb.ppu.palette[3]);
+    fixture_destroy(&f);
+}
+
+/* Only the first ten objects in OAM order that cover a line are drawn. */
+static void t_ppu_ten_objects_per_line(void)
+{
+    Fixture f = fixture_create(0x8000, 0x00);
+    fixture_video_accessible(&f);
+
+    load_solid_tile(&f.gb, 1, 3);
+    load_solid_tile(&f.gb, 2, 0);
+    load_map(&f.gb, 0x9800, 2);
+
+    for (int i = 0; i < 11; i++)
+        set_sprite(&f, i, i * 8, 0, 1, 0x00);
+    gb_write(&f.gb, 0xFF40, 0x93);
+    gb_write(&f.gb, 0xFF47, 0xE4);
+    gb_write(&f.gb, 0xFF48, 0xE4);
+    ppu_tick(&f.gb, 81);
+
+    CHECK_EQ(pixel(&f, 72, 0), f.gb.ppu.palette[3]); /* tenth object */
+    CHECK_EQ(pixel(&f, 80, 0), f.gb.ppu.palette[0]); /* eleventh dropped */
+    fixture_destroy(&f);
+}
+
+/* With LCDC bit 4 clear, tile numbers are signed and tile 0 is at $9000. */
+static void t_ppu_signed_tile_addressing(void)
+{
+    Fixture f = fixture_create(0x8000, 0x00);
+    fixture_video_accessible(&f);
+
+    load_solid_tile(&f.gb, 0, 1);      /* $8000: the wrong place */
+    load_solid_tile(&f.gb, 0x100, 3);  /* $9000: tile 0 in $8800 mode */
+    load_solid_tile(&f.gb, 0x80, 2);   /* $8800: tile $80 in $8800 mode */
+    load_map(&f.gb, 0x9800, 0);
+    gb_write(&f.gb, 0x9801, 0x80);
+
+    gb_write(&f.gb, 0xFF40, 0x81);
+    gb_write(&f.gb, 0xFF47, 0xE4);
+    ppu_tick(&f.gb, 81);
+
+    CHECK_EQ(pixel(&f, 0, 0), f.gb.ppu.palette[3]);
+    CHECK_EQ(pixel(&f, 8, 0), f.gb.ppu.palette[2]);
+    fixture_destroy(&f);
+}
+
 const TestCase ppu_tests[] = {
+    { "ppu", "sprite low and right on screen", t_ppu_sprite_low_and_right_on_screen },
+    { "ppu", "ten objects per line", t_ppu_ten_objects_per_line },
+    { "ppu", "signed tile addressing", t_ppu_signed_tile_addressing },
     { "ppu", "starts in oam scan", t_ppu_starts_in_oam_scan },
     { "ppu", "mode two lasts eighty dots", t_ppu_mode_two_lasts_eighty_dots },
     { "ppu", "mode three lasts 172 dots", t_ppu_mode_three_lasts_172_dots },

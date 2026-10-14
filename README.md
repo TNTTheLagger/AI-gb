@@ -33,6 +33,26 @@ See [docs/screenshot.txt](docs/screenshot.txt) for what it draws.
 * **Input** — the full 4x2 joypad matrix, including the interrupt on a
   button press.
 
+## Status
+
+Playable. Tetris runs from the copyright screen through a full game, and the
+CPU and renderer pass the standard independent test ROMs.
+
+| Area | State | Verified by |
+| --- | --- | --- |
+| CPU instructions | complete | Blargg `cpu_instrs` (11/11), instruction-by-instruction trace comparison |
+| Instruction timing | complete | Blargg `instr_timing` |
+| Memory access timing | not modelled within an instruction | Blargg `mem_timing` fails |
+| Background, window, sprites | complete for DMG, scanline renderer | dmg-acid2, pixel exact |
+| Mid-scanline effects | not supported | — |
+| Joypad, OAM DMA, timer | complete | Tetris, unit tests |
+| Sound | implemented | unit tests only; not checked against test ROMs |
+| MBC1/2/3/5 | implemented | unit tests only; only a ROM-only game has been run |
+| Game Boy Color, link cable | not supported | — |
+
+See [Where it stands against real ROMs](#where-it-stands-against-real-roms)
+for the results and [Known limitations](#known-limitations) for the gaps.
+
 ## Building
 
 The same source list builds everywhere. There is one caveat per platform,
@@ -335,11 +355,9 @@ That pass turned up several faults, each of which is now covered by a test:
   while it fetches, and a CPU access that loses the race is lost rather than
   delayed: VRAM is reachable in modes 0 to 2, OAM only in modes 0 and 1, and
   outside those the write goes nowhere and the read comes back as open bus.
-* OAM DMA was reading through the CPU's memory map. The transfer has its own
-  address decoding and puts the source address straight out on its own bus:
-  `$00-$7F` is cartridge ROM, `$80-$9F` is VRAM, and `$A0-$FF` is cartridge
-  RAM. So a transfer nominally sourced from work RAM does not see work RAM,
-  which is why the reliable place to stage sprite data is `$A000-$BFFF`.
+* OAM DMA is not locked out of VRAM by the PPU, and a source from `$E000`
+  up reads the work RAM mirror rather than OAM or the I/O registers. Work
+  RAM at `$C000`, where nearly every game stages its sprites, reads normally.
 * Writing `STAT` missed a documented quirk. Outside the pixel transfer and
   outside a `LY == LYC` coincidence, the register behaves as if `$FF` had
   been written for a single M-cycle before the real value lands. All four
@@ -348,6 +366,33 @@ That pass turned up several faults, each of which is now covered by a test:
   Color, which lacks the quirk.
 * `STAT` now reports mode 0 while the PPU is powered down, rather than
   leaking whatever the internal mode happened to be.
+
+### Checking against test ROMs
+
+The unit tests above were written alongside the code, so where the code was
+wrong the tests often agreed with it. Running the emulator against
+independent test ROMs found what they could not:
+
+* **Blargg's `cpu_instrs`**, compared instruction by instruction against a
+  known-good trace, showed the `$80-$BF` ALU block decoded in the wrong
+  order. The eight groups are ADD, ADC, SUB, SBC, AND, XOR, OR, CP; the code
+  had no `SBC A,r` at all and ran XOR, AND and OR in the wrong slots, with
+  OR acting as a compare. All 11 `cpu_instrs` tests and `instr_timing` now
+  pass.
+* **Tetris** found the joypad row selects swapped (clearing bit 4 of `P1`
+  selects the d-pad, bit 5 the buttons, and both read back), OAM DMA unable to
+  read work RAM, and object positions decoded as signed, which hid every
+  object in the bottom or right half of the screen.
+* **dmg-acid2** found `WX` masked to seven bits, so a game parking the window
+  off screen at `$F0` drew it at x = 105 instead, and the window line counter
+  being reset whenever the window was disabled. It now renders the reference
+  image exactly.
+
+Reading the renderer for those also turned up the X and Y flip attribute
+bits swapped, no limit of ten objects per line, 8x16 objects flipped one
+tile at a time instead of as a whole, background priority compared after
+the palette instead of on the colour index, and `$8800` tile addressing
+based at `$8800` instead of signed from `$9000`.
 
 ## How it fits together
 
@@ -415,7 +460,7 @@ waveform.
   ROM would have left behind, so games that wait for the Nintendo logo
   scroll start immediately instead of after about a second. A handful of
   titles that drive their own intro state machine off the boot ROM's exact
-  behaviour may not get past it; see the note on Tetris below. Two registers
+  behaviour may not get past it. Two registers
   deliberately depart from the documented table: `BGP`, `OBP0` and `OBP1` are
   left as an identity mapping rather than the boot ROM's values. Hardware
   leaves them holding whatever the last power cycle left behind and the
@@ -430,6 +475,9 @@ waveform.
   a palette in the middle of a line will not see the split, and a write to
   VRAM during mode 3 is lost in its entirety rather than showing up on the
   later part of the line.
+* **Memory accesses are not timed within an instruction.** Each instruction
+  runs to completion and the rest of the machine then catches up, so Blargg's
+  `mem_timing` fails. Very few games depend on the exact M-cycle of an access.
 * **Serial is a stub.** There is no cable attached, so a transfer completes
   by shifting in an idle high line. Two emulators cannot link up.
 * **No MBC rumble.** MBC5 rumble cartridges run, but the motor is silent.
@@ -440,21 +488,15 @@ waveform.
   two taps landing close together. A real console driver would report the
   release and hold for as long as the key is down.
 
-## Where it stands against a commercial ROM
+## Where it stands against real ROMs
 
-The demo ROM and the unit tests exercise the hardware, but a real cartridge
-is a harsher test. Earlier Tetris (Rev. 01) results were taken while the
-VBlank and LCD status vectors were swapped, so they no longer describe this
-code and need to be re-measured. Tetris runs its game logic from the VBlank
-handler at `$0040`, so that swap alone would explain an intro that stalls or
-draws in pieces.
-
-Everything checked against the two references matches: 256 instruction
-timings, the opcode and CB opcode tables, the sound register addresses, the
-post-boot register values, the port select bits, the mode 3 length, the video
-memory access rules and the memory map. The CPU, timer, joypad, interrupts
-and OAM DMA all behave sanely under inspection and under the synthetic ROMs
-in the test suite.
+| ROM | Result |
+| --- | --- |
+| Blargg `cpu_instrs` | all 11 pass |
+| Blargg `instr_timing` | passes |
+| Blargg `mem_timing` | fails: see the limitation above |
+| dmg-acid2 | matches the reference image pixel for pixel |
+| Tetris (Rev. 01) | plays: copyright, title, menus, a full game through to game over |
 
 ## Credits
 

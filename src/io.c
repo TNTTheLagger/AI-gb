@@ -87,7 +87,7 @@ uint8_t io_read(GB *gb, uint16_t addr)
     case 0xFF48: return gb->ppu.obp0;
     case 0xFF49: return gb->ppu.obp1;
     case 0xFF4A: return gb->ppu.wy;
-    case 0xFF4B: return (uint8_t)(gb->ppu.wx & 0x7F);
+    case 0xFF4B: return gb->ppu.wx;
 
     /* ---- CGB only registers, reported as open bus ------------------- */
     case 0xFF4F: return 0xFF;
@@ -176,8 +176,6 @@ void io_write(GB *gb, uint16_t addr, uint8_t value)
                 ppu_lcd_on(gb);
             gb->ppu.lcdc = (uint8_t)(value | 0x80);
         }
-        if ((gb->ppu.lcdc & 0x20) == 0)
-            gb->ppu.window_line = 0;
         break;
     case 0xFF41:
         /*
@@ -224,7 +222,7 @@ void io_write(GB *gb, uint16_t addr, uint8_t value)
     case 0xFF48: gb->ppu.obp0 = value; break;
     case 0xFF49: gb->ppu.obp1 = value; break;
     case 0xFF4A: gb->ppu.wy = value; break;
-    case 0xFF4B: gb->ppu.wx = (uint8_t)(value & 0x7F); break;
+    case 0xFF4B: gb->ppu.wx = value; break;
 
     /* ---- boot ROM switch ----------------------------------------------- */
     case 0xFF50:

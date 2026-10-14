@@ -4,9 +4,9 @@
  */
 #include "gb.h"
 
-/* Bit 4 and bit 5 of P1 select the action and direction rows. */
-#define ROW_ACTIONS 0x10
-#define ROW_DIRECTIONS 0x20
+/* Clearing bit 4 of P1 selects the d-pad, clearing bit 5 the buttons. */
+#define ROW_DIRECTIONS 0x10
+#define ROW_ACTIONS 0x20
 
 /*
  * Build the four column lines.  A line reads low (0) when the button
@@ -24,19 +24,14 @@ static uint8_t joypad_lines(const Joypad *j)
     return (uint8_t)(~lines & 0x0F);
 }
 
-/* The register image a read of $FF00 returns.
- *
- * Bits 5 and 4 are the row selects, and they are write only: the reference
- * marks them W-0, so a read always sees them as clear however the game
- * selected a row.  Bits 7 and 6 are unimplemented and read as undefined;
- * one is returned, which is the usual choice and keeps the "read, then
- * mask off the top bits" idiom working.
- */
+/* The register image a read of $FF00 returns: bits 7 and 6 are unused
+ * and read as one, bits 5 and 4 read back the row selects as written, and
+ * the low nibble is the column lines. */
 uint8_t joypad_read(const GB *gb)
 {
     uint8_t lines = joypad_lines(&gb->joypad);
 
-    return (uint8_t)(0xC0 | (lines & 0x0F));
+    return (uint8_t)(0xC0 | gb->joypad.sel | (lines & 0x0F));
 }
 
 void joypad_tick(GB *gb)

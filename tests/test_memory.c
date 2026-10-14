@@ -171,13 +171,15 @@ static void t_mem_ly_is_read_only(void)
     fixture_destroy(&f);
 }
 
-static void t_mem_wx_masks_the_top_bit(void)
+/* WX is a full eight bits: values above 166 push the window off screen,
+ * which games use to hide it for a run of lines. */
+static void t_mem_wx_keeps_all_eight_bits(void)
 {
     Fixture f = fixture_create(0x8000, 0x00);
 
-    gb_write(&f.gb, 0xFF4B, 0xFF);
-    CHECK_EQ(f.gb.ppu.wx, 0x7F);
-    CHECK_EQ(gb_read(&f.gb, 0xFF4B), 0x7F);
+    gb_write(&f.gb, 0xFF4B, 0xF0);
+    CHECK_EQ(f.gb.ppu.wx, 0xF0);
+    CHECK_EQ(gb_read(&f.gb, 0xFF4B), 0xF0);
     fixture_destroy(&f);
 }
 
@@ -287,47 +289,41 @@ static void t_mem_oam_dma_blocks_direct_writes(void)
 }
 
 /*
- * The transfer does not use the CPU's address decoding.  It puts the source
- * address out on its own bus, where everything from $A0 up reads as cartridge
- * RAM, so a transfer nominally sourced from work RAM does not in fact see
- * work RAM, and one nominally sourced from $FF00 does not see the joypad.
+ * The usual source is work RAM at $C000, and that is what a transfer reads.
+ * Sources from $E000 up read the work RAM mirror, so a transfer from $FF00
+ * sees $DF00 rather than the joypad register or high RAM.
  */
-static void t_mem_oam_dma_ignores_the_cpu_memory_map(void)
+static void t_mem_oam_dma_reads_work_ram(void)
 {
     Fixture f = fixture_create(0x8000, 0x08);
 
     gb_write(&f.gb, 0x0000, 0x0A); /* enable cartridge RAM */
 
-    /* Work RAM, HRAM and the joypad register all hold recognisable values,
-     * and cartridge RAM holds something else entirely. */
-    for (unsigned i = 0; i < GB_OAM_SIZE; i++)
+    for (unsigned i = 0; i < GB_OAM_SIZE; i++) {
         gb_write(&f.gb, (uint16_t)(0xC000 + i), 0x11);
-    gb_write(&f.gb, 0xFF80, 0x22);
-    gb_write(&f.gb, 0xA000, 0x7E);
-    for (unsigned i = 0; i < GB_OAM_SIZE; i++)
         gb_write(&f.gb, (uint16_t)(0xA000 + i), 0x33);
+        gb_write(&f.gb, (uint16_t)(0xDF00 + i), 0x44);
+    }
+    gb_write(&f.gb, 0xFF80, 0x22);
 
-    gb_write(&f.gb, 0xFF46, 0xC0); /* nominally from work RAM */
+    gb_write(&f.gb, 0xFF46, 0xC0);
     for (int i = 0; i < 160 * 4; i++)
         oamdma_tick(&f.gb, 1);
+    CHECK_MSG(f.gb.oam[0] == 0x11 && f.gb.oam[159] == 0x11,
+              "a transfer from $C000 must read work RAM, got $%02X and $%02X",
+              f.gb.oam[0], f.gb.oam[159]);
 
-    CHECK_MSG(f.gb.oam[0] == 0x33 && f.gb.oam[79] == 0x33,
-              "a transfer from $C000 must read cartridge RAM, got $%02X and $%02X",
-              f.gb.oam[0], f.gb.oam[79]);
+    gb_write(&f.gb, 0xFF46, 0xA0);
+    for (int i = 0; i < 160 * 4; i++)
+        oamdma_tick(&f.gb, 1);
+    CHECK_EQ(f.gb.oam[0], 0x33); /* cartridge RAM */
 
-    /* What matters about the high range is that the CPU's own devices are
-     * invisible to a transfer: $FF80 is high RAM holding $22, and $FF00 is
-     * the joypad matrix.  Neither may come through. */
     gb_write(&f.gb, 0xFF46, 0xFF);
     for (int i = 0; i < 160 * 4; i++)
         oamdma_tick(&f.gb, 1);
-
-    CHECK_MSG(f.gb.oam[0] != 0x22,
-              "a transfer must not read high RAM, got $%02X", f.gb.oam[0]);
-    CHECK_MSG((f.gb.oam[0] & 0x0F) != (0xCF & 0x0F),
-              "a transfer must not read the joypad matrix, got $%02X",
-              f.gb.oam[0]);
-
+    CHECK_MSG(f.gb.oam[0] == 0x44 && f.gb.oam[0x80] == 0x44,
+              "a transfer from $FF00 must read the work RAM mirror at $DF00, "
+              "got $%02X and $%02X", f.gb.oam[0], f.gb.oam[0x80]);
     fixture_destroy(&f);
 }
 
@@ -676,13 +672,13 @@ const TestCase memory_tests[] = {
     { "memory", "interrupt flag top bits read high", t_mem_interrupt_flag_top_bits_read_high },
     { "memory", "open bus registers read ff", t_mem_open_bus_registers_read_ff },
     { "memory", "ly is read only", t_mem_ly_is_read_only },
-    { "memory", "wx masks the top bit", t_mem_wx_masks_the_top_bit },
+    { "memory", "wx keeps all eight bits", t_mem_wx_keeps_all_eight_bits },
     { "memory", "stat keeps the select bits", t_mem_stat_keeps_only_the_select_bits },
     { "memory", "timer registers read back masked", t_mem_timer_registers_read_back_masked },
     { "memory", "boot rom switch", t_mem_boot_rom_switch },
     { "memory", "oam dma copies a page", t_mem_oam_dma_copies_a_page },
-    { "memory", "oam dma ignores the cpu memory map",
-      t_mem_oam_dma_ignores_the_cpu_memory_map },
+    { "memory", "oam dma reads work ram",
+      t_mem_oam_dma_reads_work_ram },
     { "memory", "oam dma takes 640 cycles", t_mem_oam_dma_takes_640_cycles },
     { "memory", "oam dma blocks direct writes", t_mem_oam_dma_blocks_direct_writes },
     { "memory", "dma register reads back", t_mem_dma_register_reads_back },
