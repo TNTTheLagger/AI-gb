@@ -1,0 +1,151 @@
+name: build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux:
+    name: Linux (${{ matrix.cc }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cc: [gcc, clang]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.cc }}
+
+      - name: Build with make
+        run: make clean && make CC=${{ matrix.cc }} -j4
+
+      - name: Unit tests
+        run: ./gbtests
+
+      # The instruction timings are checked straight against the hardware
+      # reference, so the interpreter and the document cannot drift apart.
+      # The reference is a CC BY-SA document and is not in the repository,
+      # so this step is skipped when it is absent.
+      - name: Timings against the hardware reference
+        run: |
+          if [ -f gbctr.pdf ]; then
+            make timings
+            python3 tools/check_timings.py timings.txt
+          else
+            echo "gbctr.pdf not present, skipping"
+          fi
+
+      - name: Build with CMake
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_C_COMPILER=${{ matrix.cc }}
+          cmake --build build -j4
+
+      - name: ctest
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Sanitizers
+        run: |
+          make clean
+          make CC=${{ matrix.cc }} \
+               CFLAGS="-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer" \
+               LDFLAGS="-fsanitize=address,undefined"
+          ./gbtests
+
+      - name: Run headless
+        run: |
+          make clean && make CC=${{ matrix.cc }} -j4
+          python3 tools/make_demo_rom.py demo.gb
+          ./gbcpu -q -f 60 -s shot.bmp demo.gb
+          test -s shot.bmp
+
+      - name: Drive the terminal
+        run: python3 tools/check_terminal.py demo.gb ./gbcpu
+
+      - name: Render at a spread of sizes
+        run: python3 tools/check_sizes.py demo.gb ./gbcpu
+
+  macos:
+    name: macOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build, test and run
+        run: |
+          make clean && make -j4
+          ./gbtests
+          python3 tools/make_demo_rom.py demo.gb
+          ./gbcpu -q -f 30 -s shot.bmp demo.gb
+          python3 tools/check_terminal.py demo.gb ./gbcpu
+          python3 tools/check_sizes.py demo.gb ./gbcpu
+
+  windows:
+    name: Windows (${{ matrix.toolchain }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain: [msvc, mingw]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Configure (${{ matrix.toolchain }})
+        shell: pwsh
+        run: |
+          if ('${{ matrix.toolchain }}' -eq 'mingw') {
+            # Chocolatey's mingw provides a plain gcc, which CMake finds
+            # more easily than a Visual Studio generator would.
+            choco install mingw --no-progress -y
+            $env:Path = "C:\ProgramData\mingw64\mingw64\bin;$env:Path"
+            cmake -S . -B build -G "MinGW Makefiles" `
+                  -DCMAKE_BUILD_TYPE=Release `
+                  -DCMAKE_C_COMPILER=gcc
+            cmake --build build -j4 --config Release
+            $script:exe = "build\gbcpu.exe"
+            $script:tests = "build\gbtests.exe"
+          } else {
+            cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+            cmake --build build --config Release
+            $script:exe = "build\Release\gbcpu.exe"
+            $script:tests = "build\Release\gbtests.exe"
+          }
+          "exe=$script:exe"   >> $env:GITHUB_ENV
+          "tests=$script:tests" >> $env:GITHUB_ENV
+
+      - name: Unit tests (${{ matrix.toolchain }})
+        shell: pwsh
+        run: '& $env:tests'
+
+      - name: Run headless (${{ matrix.toolchain }})
+        shell: pwsh
+        run: |
+          python tools/make_demo_rom.py demo.gb
+          & $env:exe -q -f 60 -s shot.bmp demo.gb
+          if (-not (Test-Path shot.bmp)) { throw "no screenshot written" }
+          if ((Get-Item shot.bmp).Length -lt 1000) { throw "screenshot too small" }
+
+      - name: The console path really is a console (${{ matrix.toolchain }})
+        shell: pwsh
+        run: |
+          # Without a console attached the frontend skips rendering, so
+          # check that the built binary is a console subsystem program and
+          # not a windowed one.
+          $info = & dumpbin /headers $env:exe 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            if ($info -notmatch 'Subsystem\s+CONSOLE') {
+              throw "gbcpu.exe is not a console subsystem binary"
+            }
+            "console subsystem: yes"
+          } else {
+            "dumpbin unavailable, skipping the subsystem check"
+          }
