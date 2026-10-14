@@ -674,15 +674,16 @@ static int step_normal(GB *gb)
         int group = (op >> 3) & 7;
         uint8_t value = reg_get(gb, idx);
 
-        /* $80 ADD, $88 ADC, $90 SUB, $98 XOR, $A0 AND, $A8 OR, $B0 CP.
-         * SBC A,r does not exist; only the immediate form $DE does. */
+        /* $80 ADD, $88 ADC, $90 SUB, $98 SBC, $A0 AND, $A8 XOR, $B0 OR,
+         * $B8 CP. */
         switch (group) {
-        case 0: alu_add(gb, value, false); break;       /* ADD */
-        case 1: alu_add(gb, value, true); break;        /* ADC */
-        case 2: alu_sub(gb, value, false, true); break; /* SUB */
-        case 3: alu_xor(gb, value); break;               /* XOR */
+        case 0: alu_add(gb, value, false); break;        /* ADD */
+        case 1: alu_add(gb, value, true); break;         /* ADC */
+        case 2: alu_sub(gb, value, false, true); break;  /* SUB */
+        case 3: alu_sub(gb, value, true, true); break;   /* SBC */
         case 4: alu_and(gb, value); break;               /* AND */
-        case 5: alu_or(gb, value); break;                /* OR  */
+        case 5: alu_xor(gb, value); break;               /* XOR */
+        case 6: alu_or(gb, value); break;                /* OR  */
         default: alu_sub(gb, value, false, false); break; /* CP */
         }
         if (idx != 6)

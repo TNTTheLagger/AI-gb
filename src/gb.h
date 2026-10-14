@@ -157,6 +157,7 @@ typedef struct {
     int stat_delay;
 
     int window_line; /* internal window line counter               */
+    bool window_wy_hit; /* LY has matched WY at some point this frame */
     int sprites_fetched; /* sprites drawn on the current line     */
 
     /*

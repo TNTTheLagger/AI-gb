@@ -11,7 +11,7 @@ static void t_input_nothing_pressed_reads_high(void)
 {
     Fixture f = fixture_create(0x8000, 0x00);
 
-    gb_write(&f.gb, 0xFF00, 0x30); /* both rows selected */
+    gb_write(&f.gb, 0xFF00, 0x30); /* neither row selected */
     CHECK_EQ(gb_read(&f.gb, 0xFF00) & 0x0F, 0x0F);
     fixture_destroy(&f);
 }
@@ -20,7 +20,7 @@ static void t_input_direction_row(void)
 {
     Fixture f = fixture_create(0x8000, 0x00);
 
-    gb_write(&f.gb, 0xFF00, 0x10); /* action row not selected */
+    gb_write(&f.gb, 0xFF00, 0x20); /* action row not selected */
     CHECK_EQ(gb_read(&f.gb, 0xFF00) & 0x0F, 0x0F);
 
     gb_set_keys(&f.gb, GB_KEY_LEFT);
@@ -32,7 +32,7 @@ static void t_input_action_row(void)
 {
     Fixture f = fixture_create(0x8000, 0x00);
 
-    gb_write(&f.gb, 0xFF00, 0x20); /* direction row not selected */
+    gb_write(&f.gb, 0xFF00, 0x10); /* direction row not selected */
     CHECK_EQ(gb_read(&f.gb, 0xFF00) & 0x0F, 0x0F);
 
     gb_set_keys(&f.gb, GB_KEY_A);
@@ -47,11 +47,11 @@ static void t_input_rows_are_independent(void)
     gb_set_keys(&f.gb, GB_KEY_A);
 
     /* Only the action row is visible, so the A button shows. */
-    gb_write(&f.gb, 0xFF00, 0x20);
+    gb_write(&f.gb, 0xFF00, 0x10);
     CHECK_EQ(gb_read(&f.gb, 0xFF00) & 0x0F, 0x0E);
 
     /* Only the direction row is visible, where nothing is held. */
-    gb_write(&f.gb, 0xFF00, 0x10);
+    gb_write(&f.gb, 0xFF00, 0x20);
     CHECK_EQ(gb_read(&f.gb, 0xFF00) & 0x0F, 0x0F);
     fixture_destroy(&f);
 }
@@ -72,7 +72,7 @@ static void t_input_each_direction_maps_to_its_own_line(void)
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         gb_set_keys(&f.gb, 0x00);
         gb_set_keys(&f.gb, cases[i].key);
-        gb_write(&f.gb, 0xFF00, 0x10); /* direction row only */
+        gb_write(&f.gb, 0xFF00, 0x20); /* direction row only */
         CHECK_MSG((gb_read(&f.gb, 0xFF00) & 0x0F) == cases[i].expected,
                   "key %02X: expected %02X, got %02X", cases[i].key,
                   cases[i].expected, gb_read(&f.gb, 0xFF00) & 0x0F);
@@ -97,7 +97,7 @@ static void t_input_each_action_maps_to_its_own_line(void)
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         gb_set_keys(&f.gb, 0x00);
         gb_set_keys(&f.gb, cases[i].key);
-        gb_write(&f.gb, 0xFF00, 0x20); /* action row only */
+        gb_write(&f.gb, 0xFF00, 0x10); /* action row only */
         CHECK_MSG((gb_read(&f.gb, 0xFF00) & 0x0F) == cases[i].expected,
                   "key %02X: expected %02X, got %02X", cases[i].key,
                   cases[i].expected, gb_read(&f.gb, 0xFF00) & 0x0F);
@@ -110,7 +110,7 @@ static void t_input_two_buttons_at_once(void)
     Fixture f = fixture_create(0x8000, 0x00);
 
     gb_set_keys(&f.gb, GB_KEY_LEFT | GB_KEY_UP);
-    gb_write(&f.gb, 0xFF00, 0x10); /* direction row visible */
+    gb_write(&f.gb, 0xFF00, 0x20); /* direction row visible */
     CHECK_EQ(gb_read(&f.gb, 0xFF00) & 0x0F, 0x09); /* P11 and P12 pulled low */
     fixture_destroy(&f);
 }
@@ -123,10 +123,8 @@ static void t_input_only_the_select_bits_are_writable(void)
     gb_write(&f.gb, 0xFF00, 0xFF);
     CHECK_EQ(f.gb.joypad.sel, 0x30);
 
-    /* ...but the select bits are write only, so a read sees them clear.
-     * The two unimplemented bits above them read as one, which is the
-     * usual choice for a register whose value there is undefined. */
-    CHECK_EQ(gb_read(&f.gb, 0xFF00) & 0x30, 0x00);
+    /* ...and reads back.  The two unused bits above it read as one. */
+    CHECK_EQ(gb_read(&f.gb, 0xFF00) & 0x30, 0x30);
     CHECK_EQ(gb_read(&f.gb, 0xFF00) & 0xC0, 0xC0);
     fixture_destroy(&f);
 }
@@ -253,11 +251,10 @@ static void t_input_serial_is_reset(void)
 
 /*
  * Bits 5 and 4 of $FF00 select which row of the matrix is wired to the
- * column lines.  The reference marks them write only, so a read sees them
- * as clear however the game selected a row; only the low nibble carries
- * the button state back.
+ * column lines: clearing bit 4 selects the d-pad, clearing bit 5 the
+ * buttons.  They read back as written.
  */
-static void t_input_select_bits_read_as_zero(void)
+static void t_input_select_bits_read_back(void)
 {
     Fixture f = fixture_create(0x8000, 0x00);
 
@@ -266,28 +263,24 @@ static void t_input_select_bits_read_as_zero(void)
     for (uint8_t sel = 0x00; sel <= 0x30; sel += 0x10) {
         gb_write(&f.gb, 0xFF00, sel);
 
-        CHECK_MSG((gb_read(&f.gb, 0xFF00) & 0x30) == 0,
+        CHECK_MSG((gb_read(&f.gb, 0xFF00) & 0x30) == sel,
                   "select $%02X read back as $%02X", sel,
                   gb_read(&f.gb, 0xFF00));
         CHECK_EQ(gb_read(&f.gb, 0xFF00) & 0x0F, 0x0F);
     }
 
-    /* Both rows deselected leaves the column lines reading high. */
-    gb_write(&f.gb, 0xFF00, 0x30);
-    CHECK_EQ(gb_read(&f.gb, 0xFF00) & 0x0F, 0x0F);
-
-    /* And a held button still shows in the low nibble afterwards.  A is
-     * on the action row, so the directions have to be deselected. */
+    /* A held button shows in the low nibble once its row is selected.
+     * A is on the button row, selected by clearing bit 5. */
     gb_set_keys(&f.gb, GB_KEY_A);
-    gb_write(&f.gb, 0xFF00, 0x20);
+    gb_write(&f.gb, 0xFF00, 0x10);
     CHECK_EQ(gb_read(&f.gb, 0xFF00) & 0x0F, 0x0E);
-    CHECK_EQ(gb_read(&f.gb, 0xFF00) & 0x30, 0);
+    CHECK_EQ(gb_read(&f.gb, 0xFF00) & 0x30, 0x10);
 
     fixture_destroy(&f);
 }
 
 const TestCase input_tests[] = {
-    { "input", "select bits read as zero",   t_input_select_bits_read_as_zero },
+    { "input", "select bits read back",      t_input_select_bits_read_back },
     { "input", "nothing pressed reads high", t_input_nothing_pressed_reads_high },
     { "input", "direction row", t_input_direction_row },
     { "input", "action row", t_input_action_row },

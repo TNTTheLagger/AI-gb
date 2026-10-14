@@ -51,7 +51,11 @@ static uint8_t fetch_bg_pixel(GB *gb, uint16_t map_base, uint16_t data_base,
     uint8_t map_x = (uint8_t)(px >> 3);
     uint8_t map_y = (uint8_t)(py >> 3);
     uint8_t tile = gb->vram[map_base + (map_y * 32) + map_x];
-    uint16_t tile_addr = (uint16_t)(data_base + tile * 16);
+    /* $8000 addressing numbers tiles 0..255 up from $8000; $8800
+     * addressing treats the number as signed, centred on $9000. */
+    uint16_t tile_addr = data_base == 0x0000
+                             ? (uint16_t)(tile * 16)
+                             : (uint16_t)(0x1000 + (int8_t)tile * 16);
     uint8_t fine_y = (uint8_t)(py & 7);
     uint8_t bit = (uint8_t)(7 - (px & 7));
 
@@ -177,73 +181,90 @@ static void render_scanline(GB *gb)
     }
 
     /* ---- window ---- */
+    /* The window can only appear once LY has equalled WY during this
+     * frame; the match is latched whether or not the window is enabled.
+     * It keeps its own line counter, which only advances on lines where
+     * the window was actually drawn and resets once per frame, so turning
+     * the window off for a few lines resumes it where it left off.  Its
+     * left edge is WX - 7. */
+    if (p->ly == p->wy)
+        p->window_wy_hit = true;
     p->window_drawn = false;
-    if ((p->lcdc & 0x20) && p->ly >= p->wy && p->wx <= 166) {
+    if ((p->lcdc & 0x20) && p->window_wy_hit && p->wx <= 166) {
         uint16_t win_map = (p->lcdc & 0x40) ? 0x1C00 : 0x1800;
-        uint8_t y = (uint8_t)(p->wy + p->window_line);
-        int start = (int)p->wx - 7;
+        uint8_t y = (uint8_t)p->window_line;
+        int origin = (int)p->wx - 7;
+        int start = origin < 0 ? 0 : origin;
 
-        if (start < 0)
-            start = 0;
         for (x = start; x < GB_SCREEN_W; x++)
             bg_idx[x] = fetch_bg_pixel(gb, win_map, data_base, y,
-                                       (uint8_t)(x - start));
+                                       (uint8_t)(x - origin));
         p->window_drawn = true;
         p->window_start = start;
         p->window_line++;
     }
-
-    for (x = 0; x < GB_SCREEN_W; x++)
-        bg_idx[x] = palette_map(p->bgp, bg_idx[x]);
 
     /* ---- sprites ---- */
     memset(spr_shown, 0, sizeof(spr_shown));
 
     if (p->lcdc & 0x02) {
         int height = (p->lcdc & 0x04) ? 16 : 8;
-        uint8_t best_x[GB_SCREEN_W]; /* lowest X wins, ties to lower OAM */
+        int picked[10];
+        int count = 0;
+        bool claimed[GB_SCREEN_W];
 
-        for (x = 0; x < GB_SCREEN_W; x++)
-            best_x[x] = 0xFF;
+        /* OAM scan: the first ten objects in OAM order whose rows cover
+         * this line are the only ones drawn on it, on or off screen. */
+        for (int i = 0; i < 40 && count < 10; i++) {
+            /* OAM stores the position biased by 16 and 8 so that an
+             * object can hang off the top or left edge. */
+            int sprite_y = (int)gb->oam[i * 4] - 16;
 
-        for (int i = 0; i < 40; i++) {
-            const uint8_t *entry = &gb->oam[i * 4];
-            /* OAM stores the position biased by 16 and 8 so that a sprite
-             * can hang off the edge of the screen. */
-            int sprite_y = (int)(int8_t)entry[0] - 16;
-            int sprite_x = (int)(int8_t)entry[1] - 8;
+            if ((int)p->ly >= sprite_y && (int)p->ly < sprite_y + height)
+                picked[count++] = i;
+        }
+
+        /* DMG priority: the smaller X wins, and equal X goes to the lower
+         * OAM index.  A stable insertion sort on X gives exactly that. */
+        for (int a = 1; a < count; a++) {
+            int cur = picked[a];
+            int b = a - 1;
+
+            while (b >= 0 && gb->oam[picked[b] * 4 + 1] > gb->oam[cur * 4 + 1]) {
+                picked[b + 1] = picked[b];
+                b--;
+            }
+            picked[b + 1] = cur;
+        }
+
+        memset(claimed, 0, sizeof(claimed));
+        for (int n = 0; n < count; n++) {
+            const uint8_t *entry = &gb->oam[picked[n] * 4];
+            int sprite_y = (int)entry[0] - 16;
+            int sprite_x = (int)entry[1] - 8;
             uint8_t attrs = entry[3];
             int tile_index = entry[2];
-            int row_in_tile;
+            int row = (int)p->ly - sprite_y;
             uint16_t addr;
             uint8_t lo, hi, pal;
 
-            if ((int)p->ly < sprite_y || (int)p->ly >= sprite_y + height)
-                continue;
-
             p->sprites_fetched++;
             mode3_add_object_penalty(p, entry[1], sprite_x);
-            row_in_tile = (int)p->ly - sprite_y;
 
+            /* A Y flip mirrors the whole object, so for 8x16 it also
+             * swaps which of the two tiles a row comes from. */
+            if (attrs & 0x40)
+                row = height - 1 - row;
             if (height == 16)
                 tile_index &= 0xFE;
-            if (row_in_tile >= 8) {
-                row_in_tile -= 8;
-                tile_index++; /* 8x16 sprites span two tiles */
-            }
 
-            /* A Y flip mirrors the row before the tile data is fetched. */
-            if (attrs & 0x20)
-                row_in_tile = height - 1 - row_in_tile;
-
-            /* Sprite tile data always lives at $8000, never at $8800, so the
-             * offset is simply the tile number times sixteen within VRAM. */
-            addr = (uint16_t)(tile_index * 16 + row_in_tile * 2);
+            /* Object tiles always use $8000 addressing. */
+            addr = (uint16_t)(tile_index * 16 + row * 2);
             lo = gb->vram[addr & 0x1FFF];
             hi = gb->vram[(addr + 1) & 0x1FFF];
             pal = (attrs & 0x10) ? p->obp1 : p->obp0;
 
-            if (attrs & 0x40) { /* X flip */
+            if (attrs & 0x20) { /* X flip */
                 lo = flip_x(lo);
                 hi = flip_x(hi);
             }
@@ -253,27 +274,19 @@ static void render_scanline(GB *gb)
                 uint8_t bit = (uint8_t)(7 - px);
                 uint8_t color = (uint8_t)(((lo >> bit) & 1) |
                                           (((hi >> bit) & 1) << 1));
-                uint8_t rank;
 
-                if (color == 0)
+                if (sx < 0 || sx >= GB_SCREEN_W || color == 0)
                     continue;
-                if (sx < 0 || sx >= GB_SCREEN_W)
+                /* The highest priority opaque object pixel claims the
+                 * spot, even when it then loses to the background. */
+                if (claimed[sx])
+                    continue;
+                claimed[sx] = true;
+
+                /* "Behind background": hidden by BG colours 1-3. */
+                if ((attrs & 0x80) && bg_idx[sx] != 0)
                     continue;
 
-                /* DMG priority: the sprite with the smaller X coordinate
-                 * wins; equal X resolves to the lower OAM index. */
-                rank = (uint8_t)((sprite_x < 0 ? 0 : sprite_x) & 0xFF);
-                if (best_x[sx] != 0xFF && best_x[sx] <= rank)
-                    continue;
-
-                if (attrs & 0x80) {
-                    /* Flagged "behind background": colours 1-3 are still
-                     * hidden by any non-zero background pixel. */
-                    if (bg_enabled && bg_idx[sx] != 0)
-                        continue;
-                }
-
-                best_x[sx] = rank;
                 spr_shown[sx] = true;
                 spr_idx[sx] = palette_map(pal, color);
             }
@@ -282,7 +295,8 @@ static void render_scanline(GB *gb)
 
     /* ---- resolve ---- */
     for (x = 0; x < GB_SCREEN_W; x++)
-        out[x] = p->palette[spr_shown[x] ? spr_idx[x] : bg_idx[x]];
+        out[x] = p->palette[spr_shown[x] ? spr_idx[x]
+                                         : palette_map(p->bgp, bg_idx[x])];
 }
 
 /* ------------------------------------------------------------------ */
@@ -349,6 +363,7 @@ static void advance_mode(GB *gb)
             p->ly = 0;
             p->mode = MODE_OAM;
             p->window_line = 0;
+            p->window_wy_hit = false;
             p->frame_done = true;
             p->frame++;
         } else if (p->ly == 143) {
@@ -513,6 +528,7 @@ void ppu_reset(GB *gb)
     p->stat_pending = 0;
     p->stat_delay = 0;
     p->window_line = 0;
+    p->window_wy_hit = false;
     p->sprites_fetched = 0;
     memset(p->line, 0, sizeof(p->line));
     memset(p->fb, 0, sizeof(p->fb));
@@ -526,6 +542,7 @@ void ppu_lcd_off(GB *gb)
     gb->ppu.dot = 0;
     gb->ppu.mode = MODE_HBLANK;
     gb->ppu.window_line = 0;
+    gb->ppu.window_wy_hit = false;
     gb->ppu.frame_done = true;
     gb->ppu.stat_line = false;
     memset(gb->ppu.fb, 0, sizeof(gb->ppu.fb));
@@ -537,6 +554,7 @@ void ppu_lcd_on(GB *gb)
     gb->ppu.dot = 0;
     gb->ppu.mode = MODE_OAM;
     gb->ppu.window_line = 0;
+    gb->ppu.window_wy_hit = false;
     gb->ppu.frame_done = false;
     gb->ppu.stat_line = false;
     memset(gb->ppu.fb, 0, sizeof(gb->ppu.fb));

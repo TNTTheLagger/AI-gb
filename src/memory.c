@@ -171,35 +171,25 @@ static void cart_ram_write(GB *gb, uint16_t addr, uint8_t value)
 /*
  * The source side of an OAM transfer.
  *
- * The DMA controller does not use the CPU's address decoding at all.  It puts
- * the address straight out on its own bus, which means the split is by the
- * top byte of the source rather than by the memory map:
- *
- *     $00-$7F  the cartridge bus, reading ROM
- *     $80-$9F  the video RAM bus, reading VRAM
- *     $A0-$FF  the cartridge bus, reading cartridge RAM
- *
- * So a transfer from $FF00 does not see the joypad register, and one from
- * $C000 does not see work RAM: both are cartridge RAM, read from whatever the
- * mapper happens to have enabled.  The reference notes that this is how some
- * poorly made flash carts get into trouble.
- *
- * It also means the PPU's ownership of video memory does not apply: this is a
- * separate master on a separate bus.
+ * The DMA controller reads the memory map much as the CPU does, with two
+ * differences: it is not locked out of VRAM by the PPU, and sources from
+ * $E000 up read the work RAM mirror rather than OAM or I/O.  Work RAM at
+ * $C000-$DFFF is the usual source, and it reads exactly as you would expect.
  */
 static uint8_t oamdma_source(GB *gb, uint16_t addr)
 {
-    if (addr >= 0x8000 && addr < 0xA000)
-        return gb->vram[addr & 0x1FFF];
-
     if (addr < 0x8000) {
         uint8_t value;
 
         rom_byte(gb, addr, &value);
         return value;
     }
+    if (addr < 0xA000)
+        return gb->vram[addr & 0x1FFF];
+    if (addr < 0xC000)
+        return cart_ram_read(gb, addr);
 
-    return cart_ram_read(gb, addr);
+    return gb->wram[(addr - 0xC000) & 0x1FFF];
 }
 
 void oamdma_tick(GB *gb, int cycles)
