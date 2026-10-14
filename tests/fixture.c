@@ -94,6 +94,16 @@ void fixture_destroy(Fixture *f)
     f->cart.ram = NULL;
 }
 
+void fixture_video_accessible(Fixture *f)
+{
+    /*
+     * Clearing LCDC bit 7 takes the PPU off the bus entirely.  It also
+     * resets LY and the mode, which is exactly why games do it when they
+     * want to redraw the whole screen from scratch.
+     */
+    gb_write(&f->gb, 0xFF40, 0x00);
+}
+
 void fixture_header(Fixture *f, uint8_t type_code, uint8_t rom_code,
                     uint8_t ram_code)
 {

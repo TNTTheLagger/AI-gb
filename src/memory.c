@@ -168,6 +168,64 @@ static void cart_ram_write(GB *gb, uint16_t addr, uint8_t value)
 /* Bus reads / writes                                                  */
 /* ------------------------------------------------------------------ */
 
+/*
+ * The source side of an OAM transfer.
+ *
+ * The DMA controller does not use the CPU's address decoding at all.  It puts
+ * the address straight out on its own bus, which means the split is by the
+ * top byte of the source rather than by the memory map:
+ *
+ *     $00-$7F  the cartridge bus, reading ROM
+ *     $80-$9F  the video RAM bus, reading VRAM
+ *     $A0-$FF  the cartridge bus, reading cartridge RAM
+ *
+ * So a transfer from $FF00 does not see the joypad register, and one from
+ * $C000 does not see work RAM: both are cartridge RAM, read from whatever the
+ * mapper happens to have enabled.  The reference notes that this is how some
+ * poorly made flash carts get into trouble.
+ *
+ * It also means the PPU's ownership of video memory does not apply: this is a
+ * separate master on a separate bus.
+ */
+static uint8_t oamdma_source(GB *gb, uint16_t addr)
+{
+    if (addr >= 0x8000 && addr < 0xA000)
+        return gb->vram[addr & 0x1FFF];
+
+    if (addr < 0x8000) {
+        uint8_t value;
+
+        rom_byte(gb, addr, &value);
+        return value;
+    }
+
+    return cart_ram_read(gb, addr);
+}
+
+void oamdma_tick(GB *gb, int cycles)
+{
+    OAMDMA *dma = &gb->oam_dma;
+
+    if (!dma->active)
+        return;
+
+    dma->cycles -= cycles;
+
+    while (dma->cycles < 0) {
+        dma->cycles += 4;
+        if (dma->index >= GB_OAM_SIZE)
+            break;
+        gb->oam[dma->index] =
+            oamdma_source(gb, (uint16_t)(dma->src + dma->index));
+        dma->index++;
+    }
+
+    if (dma->index >= GB_OAM_SIZE) {
+        dma->active = false;
+        dma->index = 0;
+    }
+}
+
 uint8_t gb_read(GB *gb, uint16_t addr)
 {
     switch (addr & 0xF000) {
@@ -186,6 +244,9 @@ uint8_t gb_read(GB *gb, uint16_t addr)
 
     case 0x8000:
     case 0x9000:
+        /* Open bus while the PPU owns VRAM, which is mode 3 only. */
+        if (!ppu_cpu_can_read_vram(gb))
+            return 0xFF;
         return gb->vram[addr & 0x1FFF];
 
     case 0xA000:
@@ -207,8 +268,13 @@ uint8_t gb_read(GB *gb, uint16_t addr)
         break;
     }
 
-    if (addr >= GB_MEM_OAM && addr < GB_MEM_OAM + GB_OAM_SIZE)
+    if (addr >= GB_MEM_OAM && addr < GB_MEM_OAM + GB_OAM_SIZE) {
+        /* Open bus whenever the PPU owns OAM: the object scan and the
+         * transfer, that is modes 2 and 3. */
+        if (!ppu_cpu_can_read_oam(gb))
+            return 0xFF;
         return gb->oam[addr - GB_MEM_OAM];
+    }
 
     if (addr < GB_MEM_IO)
         return 0xFF; /* $FEA0-$FEFF does not exist */
@@ -309,6 +375,9 @@ void gb_write(GB *gb, uint16_t addr, uint8_t value)
 
     case 0x8000:
     case 0x9000:
+        /* The write is lost rather than delayed. */
+        if (!ppu_cpu_can_read_vram(gb))
+            return;
         gb->vram[addr & 0x1FFF] = value;
         return;
 
@@ -335,8 +404,9 @@ void gb_write(GB *gb, uint16_t addr, uint8_t value)
     }
 
     if (addr >= GB_MEM_OAM && addr < GB_MEM_OAM + GB_OAM_SIZE) {
-        /* OAM writes during an active DMA transfer are ignored. */
-        if (gb->oam_dma.active)
+        /* Lost during an active DMA transfer, and whenever the PPU has OAM
+         * to itself. */
+        if (gb->oam_dma.active || !ppu_cpu_can_read_oam(gb))
             return;
         gb->oam[addr - GB_MEM_OAM] = value;
         return;

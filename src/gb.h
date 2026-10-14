@@ -148,6 +148,14 @@ typedef struct {
 
     bool stat_line; /* previous level of the STAT interrupt line  */
 
+    /*
+     * Writing STAT is delayed by one M-cycle on a monochrome Game Boy, with
+     * every interrupt source briefly selected in the meantime.  The value
+     * that was really written waits here until the CPU moves on.
+     */
+    uint8_t stat_pending;
+    int stat_delay;
+
     int window_line; /* internal window line counter               */
     int sprites_fetched; /* sprites drawn on the current line     */
 
@@ -366,6 +374,20 @@ void ppu_lcd_on(GB *gb);
 void ppu_lcd_off(GB *gb);
 void ppu_update_stat(GB *gb);
 void ppu_dma_start(GB *gb, uint8_t value);
+
+/*
+ * Whether the CPU can see a region's video memory right now.  The PPU owns
+ * VRAM and OAM while it is fetching from them, and a CPU access that loses
+ * the race is simply lost: writes go nowhere and reads return open bus.
+ *
+ * VRAM is reachable in modes 0, 1 and 2, and locked only during the pixel
+ * transfer.  OAM is reachable in modes 0 and 1, and locked for both the
+ * object scan and the transfer.  With the LCD off the PPU is not fetching,
+ * so everything is reachable.
+ */
+bool ppu_cpu_can_read_vram(const GB *gb);
+bool ppu_cpu_can_read_oam(const GB *gb);
+
 void timer_reset(GB *gb);
 uint8_t timer_div(const GB *gb);
 void apu_reset(GB *gb);

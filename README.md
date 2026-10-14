@@ -332,6 +332,23 @@ That pass turned up several faults, each of which is now covered by a test:
   the whole scanline has a zero-length horizontal blank, and the mode advance
   was charging it a dot anyway, so such lines ran 457 dots long and the frame
   drifted.
+* Video memory was never locked. The PPU is the bus master for VRAM and OAM
+  while it fetches, and a CPU access that loses the race is lost rather than
+  delayed: VRAM is reachable in modes 0 to 2, OAM only in modes 0 and 1, and
+  outside those the write goes nowhere and the read comes back as open bus.
+* OAM DMA was reading through the CPU's memory map. The transfer has its own
+  address decoding and puts the source address straight out on its own bus:
+  `$00-$7F` is cartridge ROM, `$80-$9F` is VRAM, and `$A0-$FF` is cartridge
+  RAM. So a transfer nominally sourced from work RAM does not see work RAM,
+  which is why the reliable place to stage sprite data is `$A000-$BFFF`.
+* Writing `STAT` missed a documented quirk. Outside the pixel transfer and
+  outside a `LY == LYC` coincidence, the register behaves as if `$FF` had
+  been written for a single M-cycle before the real value lands. All four
+  interrupt sources are selected for that instant, which is enough to raise
+  one. Two published games depend on this and neither runs on a Game Boy
+  Color, which lacks the quirk.
+* `STAT` now reports mode 0 while the PPU is powered down, rather than
+  leaking whatever the internal mode happened to be.
 
 ## How it fits together
 
@@ -411,11 +428,9 @@ waveform.
   Game Boy border and palettes are not emulated.
 * **Scanline rendering.** Lines are drawn in one pass at the start of mode 3
   rather than pixel by pixel through a FIFO, so a game that changes `SCX` or
-  a palette in the middle of a line will not see the split.
-* **VRAM is never locked.** On hardware the PPU owns VRAM and OAM during
-  modes 2 and 3, and the CPU's writes to them are dropped and its reads
-  return garbage. Here they always succeed, which is the forgiving direction
-  but not the accurate one.
+  a palette in the middle of a line will not see the split, and a write to
+  VRAM during mode 3 is lost in its entirety rather than showing up on the
+  later part of the line.
 * **Serial is a stub.** There is no cable attached, so a transfer completes
   by shifting in an idle high line. Two emulators cannot link up.
 * **No MBC rumble.** MBC5 rumble cartridges run, but the motor is silent.
@@ -447,15 +462,25 @@ loop spun forever on `$FF85`. Fixing that moved the game from frame 4 to
 frame 14 and set the state variable moving; what remains is the logo art
 itself, not the state machine.
 
+What the state machine is doing is now clear. The intro variable at `$FF98`
+reaches 9 and stays there, and the run length decoder that unpacks the logo
+is invoked about thirteen times a frame and completes every time — so it is
+drawing the logo a tile at a time rather than hanging. But it keeps being
+invoked, redraws the same tiles, and the screen stops changing.
+
+So the remaining fault is not the decoder, and not the state machine losing
+an interrupt. It is whatever should stop the decoder being called again. The
+references were re-read for it, and everything they specify about this area
+is now implemented and tested: the interrupt vectors, video memory locking,
+the `STAT` write quirk, the DMA address decoding, the post-boot values and
+the mode 3 length. None of them moved this title any further.
+
 Everything checked against the two references matches: 256 instruction
 timings, the opcode and CB opcode tables, the sound register addresses, the
-post-boot register values, the port select bits, the mode 3 length, and the
-memory map. The CPU, timer, joypad, interrupts and OAM DMA all behave sanely
-under inspection and under the synthetic ROMs in the test suite. What has not
-been found yet is whatever this particular title needs for the logo's
-character tiles to come out whole. The likeliest candidates left are VRAM and
-OAM access not being blocked during mode 3, which is documented but not
-implemented here, and finer PPU timing than the scanline renderer provides.
+post-boot register values, the port select bits, the mode 3 length, the video
+memory access rules and the memory map. The CPU, timer, joypad, interrupts
+and OAM DMA all behave sanely under inspection and under the synthetic ROMs
+in the test suite.
 
 ## Credits
 

@@ -537,6 +537,9 @@ static void set_sprite(Fixture *f, int index, int x, int y, int tile,
 static void t_ppu_sprite_is_drawn(void)
 {
     Fixture f = fixture_create(0x8000, 0x00);
+    /* The PPU owns video memory while it fetches, so set the screen up
+     * with it switched off: that is what real code does too. */
+    fixture_video_accessible(&f);
 
     load_solid_tile(&f.gb, 1, 3);
     load_map(&f.gb, 0x9800, 2); /* blank background */
@@ -556,6 +559,9 @@ static void t_ppu_sprite_is_drawn(void)
 static void t_ppu_sprite_is_clipped_at_the_edges(void)
 {
     Fixture f = fixture_create(0x8000, 0x00);
+    /* The PPU owns video memory while it fetches, so set the screen up
+     * with it switched off: that is what real code does too. */
+    fixture_video_accessible(&f);
 
     load_solid_tile(&f.gb, 1, 3);
     load_map(&f.gb, 0x9800, 2);
@@ -593,6 +599,9 @@ static void t_ppu_sprite_palettes(void)
 static void t_ppu_sprite_x_flip(void)
 {
     Fixture f = fixture_create(0x8000, 0x00);
+    /* The PPU owns video memory while it fetches, so set the screen up
+     * with it switched off: that is what real code does too. */
+    fixture_video_accessible(&f);
 
     load_map(&f.gb, 0x9800, 2);
     load_solid_tile(&f.gb, 2, 0);
@@ -639,6 +648,9 @@ static void t_ppu_sprite_y_flip(void)
 static void t_ppu_sprite_16_tall(void)
 {
     Fixture f = fixture_create(0x8000, 0x00);
+    /* The PPU owns video memory while it fetches, so set the screen up
+     * with it switched off: that is what real code does too. */
+    fixture_video_accessible(&f);
 
     load_map(&f.gb, 0x9800, 2);
     load_solid_tile(&f.gb, 2, 0);
@@ -662,6 +674,9 @@ static void t_ppu_sprite_16_tall(void)
 static void t_ppu_smaller_x_wins(void)
 {
     Fixture f = fixture_create(0x8000, 0x00);
+    /* The PPU owns video memory while it fetches, so set the screen up
+     * with it switched off: that is what real code does too. */
+    fixture_video_accessible(&f);
 
     load_solid_tile(&f.gb, 1, 3);
     load_solid_tile(&f.gb, 2, 2);
@@ -684,6 +699,9 @@ static void t_ppu_smaller_x_wins(void)
 static void t_ppu_equal_x_resolves_to_lower_oam_index(void)
 {
     Fixture f = fixture_create(0x8000, 0x00);
+    /* The PPU owns video memory while it fetches, so set the screen up
+     * with it switched off: that is what real code does too. */
+    fixture_video_accessible(&f);
 
     load_solid_tile(&f.gb, 1, 3);
     load_solid_tile(&f.gb, 2, 2);
@@ -720,6 +738,9 @@ static void t_ppu_sprite_behind_the_background(void)
 static void t_ppu_sprite_shows_over_a_blank_background(void)
 {
     Fixture f = fixture_create(0x8000, 0x00);
+    /* The PPU owns video memory while it fetches, so set the screen up
+     * with it switched off: that is what real code does too. */
+    fixture_video_accessible(&f);
 
     load_solid_tile(&f.gb, 1, 3);
     load_solid_tile(&f.gb, 2, 0);
@@ -754,6 +775,9 @@ static void t_ppu_sprites_disabled_by_lcdc(void)
 static void t_ppu_sprites_stretch_mode_three(void)
 {
     Fixture f = fixture_create(0x8000, 0x00);
+    /* The PPU owns video memory while it fetches, so set the screen up
+     * with it switched off: that is what real code does too. */
+    fixture_video_accessible(&f);
 
     load_map(&f.gb, 0x9800, 2);
     load_solid_tile(&f.gb, 2, 0);
@@ -804,6 +828,9 @@ static void t_ppu_scx_delays_the_first_fetch(void)
 static void t_ppu_two_objects_in_one_tile_pay_once(void)
 {
     Fixture f = fixture_create(0x8000, 0x00);
+    /* The PPU owns video memory while it fetches, so set the screen up
+     * with it switched off: that is what real code does too. */
+    fixture_video_accessible(&f);
 
     load_map(&f.gb, 0x9800, 2);
     load_solid_tile(&f.gb, 2, 0);
@@ -823,6 +850,9 @@ static void t_ppu_two_objects_in_one_tile_pay_once(void)
 static void t_ppu_edge_object_costs_eleven_dots(void)
 {
     Fixture f = fixture_create(0x8000, 0x00);
+    /* The PPU owns video memory while it fetches, so set the screen up
+     * with it switched off: that is what real code does too. */
+    fixture_video_accessible(&f);
 
     load_map(&f.gb, 0x9800, 2);
     load_solid_tile(&f.gb, 2, 0);

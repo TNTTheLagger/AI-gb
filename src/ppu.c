@@ -391,6 +391,16 @@ void ppu_tick(GB *gb, int cycles)
 {
     PPU *p = &gb->ppu;
 
+    /*
+     * Retire a delayed STAT write.  The quirk lasts a single M-cycle, so it
+     * expires on the first tick after it, whatever else is going on.
+     */
+    if (p->stat_delay > 0 && --p->stat_delay == 0) {
+        p->stat = (uint8_t)((p->stat_pending & 0x78) | (p->stat & 0x07));
+        p->stat &= 0x7F;
+        ppu_update_stat(gb);
+    }
+
     if (!(p->lcdc & 0x80))
         return; /* the LCD is powered down, no timing advances */
 
@@ -427,6 +437,37 @@ void ppu_tick(GB *gb, int cycles)
             }
         }
     }
+}
+
+/*
+ * The PPU is the bus master for video memory while it is working, and a CPU
+ * access that arrives at the wrong moment is simply lost: the write goes
+ * nowhere and the read comes back as open bus.  Which memory is held, and
+ * for how long, is set out in the PPU mode table:
+ *
+ *     mode 2, searching objects   VRAM yes, OAM no
+ *     mode 3, sending pixels      VRAM no,  OAM no
+ *     mode 0, horizontal blank    both yes
+ *     mode 1, vertical blank      both yes
+ *
+ * The window is only ever a few dots past the start of mode 0, which is
+ * why the usual way to use it is to spin on the mode bits of STAT first.
+ */
+bool ppu_cpu_can_read_vram(const GB *gb)
+{
+    if (!(gb->ppu.lcdc & 0x80))
+        return true; /* the PPU is powered down and is not fetching */
+
+    return gb->ppu.mode != MODE_TRANSFER;
+}
+
+bool ppu_cpu_can_read_oam(const GB *gb)
+{
+    if (!(gb->ppu.lcdc & 0x80))
+        return true;
+
+    /* Locked for the object scan as well as the transfer. */
+    return gb->ppu.mode == MODE_HBLANK || gb->ppu.mode == MODE_VBLANK;
 }
 
 void ppu_reset(GB *gb)
@@ -469,6 +510,8 @@ void ppu_reset(GB *gb)
     p->frame_done = false;
     p->frame = 0;
     p->stat_line = false;
+    p->stat_pending = 0;
+    p->stat_delay = 0;
     p->window_line = 0;
     p->sprites_fetched = 0;
     memset(p->line, 0, sizeof(p->line));

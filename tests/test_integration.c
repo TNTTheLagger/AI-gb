@@ -403,19 +403,24 @@ static void t_integ_rom_banking_during_execution(void)
 
 static void t_integ_dma_moves_sprite_data(void)
 {
-    Fixture f = fixture_create(0x8000, 0x00);
+    Fixture f = fixture_create(0x8000, 0x08);
     const uint8_t code[] = {
-        0x21, 0x00, 0xC0,       /* LD HL,$C000 */
+        0x3E, 0x0A,             /* LD A,$0A    */
+        0x32, 0x00, 0x00,       /* LD ($0000),A -> enable cart RAM   */
+        0x21, 0x00, 0xA0,       /* LD HL,$A000 */
         0x3E, 0xA0,             /* LD A,$A0    */
         0x06, 0x08,             /* LD B,$08    */
         0x22,                   /* LD (HL+),A  */
         0x05,                   /* DEC B       */
         0x20, 0xFC,             /* JR NZ,-4    */
-        0x3E, 0xC0,             /* LD A,$C0    */
-        0xE0, 0x46,             /* LDH ($46),A -> OAM DMA from $C000 */
+        0x3E, 0xA0,             /* LD A,$A0    */
+        0xE0, 0x46,             /* LDH ($46),A -> OAM DMA from $A000 */
         0x18                    /* JR -1       */
     };
 
+    /* Cartridge RAM is the only reliable source for a transfer: the DMA
+     * controller reads $A0-$FF as cartridge RAM whatever the CPU map says. */
+    gb_write(&f.gb, 0x0000, 0x0A);
     load_program(&f, code, sizeof(code));
     for (int i = 0; i < 200; i++)
         step(&f);

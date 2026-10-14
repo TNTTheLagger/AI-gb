@@ -67,6 +67,9 @@ static void t_mem_echo_ram_mirrors_wram(void)
 static void t_mem_oam_round_trip(void)
 {
     Fixture f = fixture_create(0x8000, 0x00);
+    /* The PPU owns video memory while it fetches, so set the screen up
+     * with it switched off: that is what real code does too. */
+    fixture_video_accessible(&f);
     int ok = 1;
 
     for (unsigned i = 0; i < GB_OAM_SIZE; i++)
@@ -92,6 +95,9 @@ static void t_mem_unusable_region(void)
 static void t_mem_echo_ram_stops_before_oam(void)
 {
     Fixture f = fixture_create(0x8000, 0x00);
+    /* The PPU owns video memory while it fetches, so set the screen up
+     * with it switched off: that is what real code does too. */
+    fixture_video_accessible(&f);
 
     /* $E000-$FDFF is a window onto $C000-$DDFF only. */
     gb_write(&f.gb, 0xE000, 0x33);
@@ -221,12 +227,16 @@ static void t_mem_boot_rom_switch(void)
 
 static void t_mem_oam_dma_copies_a_page(void)
 {
-    Fixture f = fixture_create(0x8000, 0x00);
+    /* Cartridge RAM at $A000 is the one place a transfer can reliably read
+     * from, because that is the only part of the $A0-$FF range the DMA
+     * address decoding treats as cartridge RAM. */
+    Fixture f = fixture_create(0x8000, 0x08);
 
+    gb_write(&f.gb, 0x0000, 0x0A); /* enable cartridge RAM */
     for (unsigned i = 0; i < GB_OAM_SIZE; i++)
-        gb_write(&f.gb, (uint16_t)(0xC000 + i), (uint8_t)(0xA0 + i));
+        gb_write(&f.gb, (uint16_t)(0xA000 + i), (uint8_t)(0xA0 + i));
 
-    gb_write(&f.gb, 0xFF46, 0xC0);
+    gb_write(&f.gb, 0xFF46, 0xA0);
     CHECK_EQ(f.gb.oam_dma.active, true);
 
     /* The copy takes 640 T-cycles, one byte every four. */
@@ -258,18 +268,66 @@ static void t_mem_oam_dma_takes_640_cycles(void)
 static void t_mem_oam_dma_blocks_direct_writes(void)
 {
     Fixture f = fixture_create(0x8000, 0x00);
+    /* The PPU owns video memory while it fetches, so set the screen up
+     * with it switched off: that is what real code does too. */
+    fixture_video_accessible(&f);
 
     gb_write(&f.gb, 0xFE00, 0x11);
     CHECK_EQ(f.gb.oam[0], 0x11);
 
-    gb_write(&f.gb, 0xFF46, 0xC0);
+    gb_write(&f.gb, 0xFF46, 0xA0);
     /* While the transfer runs the CPU cannot disturb the destination. */
     gb_write(&f.gb, 0xFE00, 0x99);
     CHECK_EQ(f.gb.oam[0], 0x11);
 
     for (int i = 0; i < 160; i++)
         oamdma_tick(&f.gb, 4);
-    CHECK_EQ(f.gb.oam[0], 0x00); /* and it has been overwritten from C000 */
+    CHECK_EQ(f.gb.oam[0], 0xFF); /* and it has been overwritten from the cart */
+    fixture_destroy(&f);
+}
+
+/*
+ * The transfer does not use the CPU's address decoding.  It puts the source
+ * address out on its own bus, where everything from $A0 up reads as cartridge
+ * RAM, so a transfer nominally sourced from work RAM does not in fact see
+ * work RAM, and one nominally sourced from $FF00 does not see the joypad.
+ */
+static void t_mem_oam_dma_ignores_the_cpu_memory_map(void)
+{
+    Fixture f = fixture_create(0x8000, 0x08);
+
+    gb_write(&f.gb, 0x0000, 0x0A); /* enable cartridge RAM */
+
+    /* Work RAM, HRAM and the joypad register all hold recognisable values,
+     * and cartridge RAM holds something else entirely. */
+    for (unsigned i = 0; i < GB_OAM_SIZE; i++)
+        gb_write(&f.gb, (uint16_t)(0xC000 + i), 0x11);
+    gb_write(&f.gb, 0xFF80, 0x22);
+    gb_write(&f.gb, 0xA000, 0x7E);
+    for (unsigned i = 0; i < GB_OAM_SIZE; i++)
+        gb_write(&f.gb, (uint16_t)(0xA000 + i), 0x33);
+
+    gb_write(&f.gb, 0xFF46, 0xC0); /* nominally from work RAM */
+    for (int i = 0; i < 160 * 4; i++)
+        oamdma_tick(&f.gb, 1);
+
+    CHECK_MSG(f.gb.oam[0] == 0x33 && f.gb.oam[79] == 0x33,
+              "a transfer from $C000 must read cartridge RAM, got $%02X and $%02X",
+              f.gb.oam[0], f.gb.oam[79]);
+
+    /* What matters about the high range is that the CPU's own devices are
+     * invisible to a transfer: $FF80 is high RAM holding $22, and $FF00 is
+     * the joypad matrix.  Neither may come through. */
+    gb_write(&f.gb, 0xFF46, 0xFF);
+    for (int i = 0; i < 160 * 4; i++)
+        oamdma_tick(&f.gb, 1);
+
+    CHECK_MSG(f.gb.oam[0] != 0x22,
+              "a transfer must not read high RAM, got $%02X", f.gb.oam[0]);
+    CHECK_MSG((f.gb.oam[0] & 0x0F) != (0xCF & 0x0F),
+              "a transfer must not read the joypad matrix, got $%02X",
+              f.gb.oam[0]);
+
     fixture_destroy(&f);
 }
 
@@ -372,7 +430,237 @@ static void t_memory_post_boot_audio_state(void)
     fixture_destroy(&f);
 }
 
+/*
+ * The PPU is the bus master for video memory while it fetches, and a CPU
+ * access that arrives at the wrong moment is lost rather than delayed:
+ * the write goes nowhere and the read comes back as open bus.  VRAM is
+ * reachable in modes 0, 1 and 2; OAM only in modes 0 and 1.
+ */
+static void t_memory_vram_is_locked_only_during_the_transfer(void)
+{
+    Fixture f = fixture_create(0x8000, 0x00);
+    int seen[4] = { 0, 0, 0, 0 };
+    int locked_in_mode3_seen = 0, locked_in_mode2_seen = 0;
+    int open_in_mode2 = 0;
+
+    gb_write(&f.gb, 0xFF40, 0x91); /* LCD on, background on */
+
+    for (int i = 0; i < 20000; i++) {
+        int mode = f.gb.ppu.mode;
+        uint8_t read;
+
+        if (mode >= 0 && mode < 4)
+            seen[mode] = 1;
+
+        gb_write(&f.gb, 0x8000, 0x5A);
+        read = gb_read(&f.gb, 0x8000);
+
+        if (mode == 3 && read == 0xFF)
+            locked_in_mode3_seen = 1;
+        if (mode == 2 && read == 0xFF)
+            locked_in_mode2_seen = 1;
+        if (mode == 2 && read == 0x5A)
+            open_in_mode2 = 1;
+
+        gb_tick(&f.gb, 4);
+    }
+
+    /* The four modes were all visited, so the check was meaningful. */
+    CHECK(seen[0] && seen[1] && seen[2] && seen[3]);
+    CHECK_MSG(locked_in_mode3_seen,
+              "mode 3 owns VRAM, so a write there must not read back");
+    CHECK_MSG(!locked_in_mode2_seen,
+              "VRAM is reachable during the object scan, so mode 2 must not "
+              "return open bus");
+    CHECK_MSG(open_in_mode2,
+              "a write to VRAM during mode 2 must land");
+
+    fixture_destroy(&f);
+}
+
+/* A write that loses the race is gone for good, not held back until later. */
+static void t_memory_a_locked_vram_write_is_lost(void)
+{
+    Fixture f = fixture_create(0x8000, 0x00);
+
+    gb_write(&f.gb, 0xFF40, 0x91);
+
+    /* Spin until the PPU is mid-transfer, then write. */
+    while (f.gb.ppu.mode != 3)
+        gb_tick(&f.gb, 4);
+
+    gb_write(&f.gb, 0x8123, 0x77);
+    while (f.gb.ppu.mode == 3)
+        gb_tick(&f.gb, 4);
+
+    CHECK_MSG(gb_read(&f.gb, 0x8123) != 0x77,
+              "the write happened during mode 3 and should have been dropped");
+    fixture_destroy(&f);
+}
+
+/* OAM is locked for the object scan as well as the transfer. */
+static void t_memory_oam_is_locked_for_the_object_scan(void)
+{
+    Fixture f = fixture_create(0x8000, 0x00);
+    int locked_in_mode2 = 0, open_in_mode0 = 0, locked_in_mode3 = 0;
+
+    gb_write(&f.gb, 0xFF40, 0x91);
+
+    for (int i = 0; i < 20000; i++) {
+        int mode = f.gb.ppu.mode;
+        uint8_t read;
+
+        gb_write(&f.gb, GB_MEM_OAM, 0x33);
+        read = gb_read(&f.gb, GB_MEM_OAM);
+
+        if (mode == 2 && read == 0xFF)
+            locked_in_mode2 = 1;
+        if (mode == 3 && read == 0xFF)
+            locked_in_mode3 = 1;
+        if (mode == 0 && read == 0x33)
+            open_in_mode0 = 1;
+
+        gb_tick(&f.gb, 4);
+    }
+
+    CHECK_MSG(locked_in_mode2,
+              "the PPU is reading OAM during the object scan, so a write "
+              "must not read back");
+    CHECK_MSG(locked_in_mode3, "mode 3 owns OAM too");
+    CHECK_MSG(open_in_mode0, "OAM is reachable in horizontal blank");
+    fixture_destroy(&f);
+}
+
+/* With the LCD off the PPU fetches nothing, so everything is reachable
+ * however the CPU happens to be running. */
+static void t_memory_video_memory_is_open_with_the_lcd_off(void)
+{
+    Fixture f = fixture_create(0x8000, 0x00);
+    int checked = 0;
+
+    fixture_video_accessible(&f);
+
+    for (int i = 0; i < 5000; i++) {
+        gb_write(&f.gb, 0x8000, 0x5A);
+        gb_write(&f.gb, GB_MEM_OAM, 0x33);
+        if (gb_read(&f.gb, 0x8000) == 0x5A && gb_read(&f.gb, GB_MEM_OAM) == 0x33)
+            checked++;
+        gb_tick(&f.gb, 4);
+    }
+
+    CHECK_MSG(checked == 5000,
+              "every access should work with the LCD off, %d of 5000 did",
+              checked);
+    fixture_destroy(&f);
+}
+
+/*
+ * Writing STAT has a hardware quirk on a monochrome Game Boy.  Outside the
+ * pixel transfer and outside a LY==LYC coincidence, the write is not taken
+ * straight away: the register behaves as if $FF had been written for one
+ * M-cycle, and only then does the real value land.  All four interrupt
+ * sources are selected for that instant, which is enough to fire one.
+ *
+ * It is obscure, but two published games depend on it and neither runs on a
+ * Game Boy Color, which does not have it.
+ */
+static void t_memory_writing_stat_selects_every_source_briefly(void)
+{
+    Fixture f = fixture_create(0x8000, 0x00);
+    int saw_fire = 0;
+
+    gb_write(&f.gb, 0xFF40, 0x91);
+    gb_write(&f.gb, 0xFF41, 0x00); /* no source selected, so the line is low */
+
+    for (int i = 0; i < 2000 && !saw_fire; i++) {
+        f.gb.iflag = 0;
+
+        /* Write zero while the PPU is outside mode 3 and outside LY==LYC. */
+        while (f.gb.ppu.mode == 3 || f.gb.ppu.ly == f.gb.ppu.lyc)
+            gb_tick(&f.gb, 4);
+
+        gb_write(&f.gb, 0xFF41, 0x00);
+
+        if (f.gb.iflag & GB_INT_LCDSTAT)
+            saw_fire = 1;
+
+        gb_tick(&f.gb, 4);
+    }
+
+    CHECK_MSG(saw_fire,
+              "the one M-cycle of $FF should raise a STAT interrupt");
+    fixture_destroy(&f);
+}
+
+/* The delayed value does land, a cycle later. */
+static void t_memory_a_delayed_stat_write_eventually_applies(void)
+{
+    Fixture f = fixture_create(0x8000, 0x00);
+
+    gb_write(&f.gb, 0xFF40, 0x91);
+    gb_write(&f.gb, 0xFF41, 0x00);
+
+    while (f.gb.ppu.mode == 3 || f.gb.ppu.ly == f.gb.ppu.lyc)
+        gb_tick(&f.gb, 4);
+
+    gb_write(&f.gb, 0xFF41, 0x68); /* modes 0, 2 and 3 */
+    CHECK_MSG((gb_read(&f.gb, 0xFF41) & 0x78) != 0x68,
+              "the write should not have taken effect yet");
+
+    for (int i = 0; i < 8; i++)
+        gb_tick(&f.gb, 4);
+
+    CHECK_EQ(gb_read(&f.gb, 0xFF41) & 0x78, 0x68);
+    fixture_destroy(&f);
+}
+
+/* During the pixel transfer, and on a LY==LYC coincidence, there is no
+ * quirk: the write lands at once. */
+static void t_memory_stat_write_is_immediate_during_the_transfer(void)
+{
+    Fixture f = fixture_create(0x8000, 0x00);
+
+    gb_write(&f.gb, 0xFF40, 0x91);
+
+    while (f.gb.ppu.mode != 3)
+        gb_tick(&f.gb, 4);
+
+    gb_write(&f.gb, 0xFF41, 0x68);
+    CHECK_EQ(gb_read(&f.gb, 0xFF41) & 0x78, 0x68);
+    fixture_destroy(&f);
+}
+
+/* A powered down PPU reports mode 0 rather than its internal state. */
+static void t_memory_stat_reports_mode_zero_with_the_lcd_off(void)
+{
+    Fixture f = fixture_create(0x8000, 0x00);
+
+    gb_write(&f.gb, 0xFF40, 0x91);
+    while (f.gb.ppu.mode != 3)
+        gb_tick(&f.gb, 4);
+
+    gb_write(&f.gb, 0xFF40, 0x00); /* LCD off */
+    CHECK_EQ(gb_read(&f.gb, 0xFF41) & 0x03, 0x00);
+    fixture_destroy(&f);
+}
+
 const TestCase memory_tests[] = {
+    { "memory", "writing stat selects every source briefly",
+      t_memory_writing_stat_selects_every_source_briefly },
+    { "memory", "a delayed stat write eventually applies",
+      t_memory_a_delayed_stat_write_eventually_applies },
+    { "memory", "stat write immediate during the transfer",
+      t_memory_stat_write_is_immediate_during_the_transfer },
+    { "memory", "stat reports mode zero with the lcd off",
+      t_memory_stat_reports_mode_zero_with_the_lcd_off },
+    { "memory", "vram locked only during the transfer",
+      t_memory_vram_is_locked_only_during_the_transfer },
+    { "memory", "a locked vram write is lost",
+      t_memory_a_locked_vram_write_is_lost },
+    { "memory", "oam locked for the object scan",
+      t_memory_oam_is_locked_for_the_object_scan },
+    { "memory", "video memory open with the lcd off",
+      t_memory_video_memory_is_open_with_the_lcd_off },
     { "memory", "post-boot register values",    t_memory_post_boot_register_values },
     { "memory", "stat reports the lyc compare", t_memory_stat_reports_the_lyc_compare },
     { "memory", "post-boot audio state",       t_memory_post_boot_audio_state },
@@ -393,6 +681,8 @@ const TestCase memory_tests[] = {
     { "memory", "timer registers read back masked", t_mem_timer_registers_read_back_masked },
     { "memory", "boot rom switch", t_mem_boot_rom_switch },
     { "memory", "oam dma copies a page", t_mem_oam_dma_copies_a_page },
+    { "memory", "oam dma ignores the cpu memory map",
+      t_mem_oam_dma_ignores_the_cpu_memory_map },
     { "memory", "oam dma takes 640 cycles", t_mem_oam_dma_takes_640_cycles },
     { "memory", "oam dma blocks direct writes", t_mem_oam_dma_blocks_direct_writes },
     { "memory", "dma register reads back", t_mem_dma_register_reads_back },

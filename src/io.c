@@ -75,7 +75,9 @@ uint8_t io_read(GB *gb, uint16_t addr)
          */
         return (uint8_t)(0x80 | (gb->ppu.stat & 0x78) |
                          (gb->ppu.ly == gb->ppu.lyc ? 0x04 : 0x00) |
-                         (gb->ppu.mode & 0x03));
+                         /* A powered down PPU reports mode 0 whatever it
+                          * was doing, rather than its internal state. */
+                         ((gb->ppu.lcdc & 0x80) ? (gb->ppu.mode & 0x03) : 0));
     case 0xFF42: return gb->ppu.scy;
     case 0xFF43: return gb->ppu.scx;
     case 0xFF44: return gb->ppu.ly;
@@ -178,9 +180,37 @@ void io_write(GB *gb, uint16_t addr, uint8_t value)
             gb->ppu.window_line = 0;
         break;
     case 0xFF41:
-        gb->ppu.stat = (uint8_t)((value & 0x78) | (gb->ppu.stat & 0x07));
-        gb->ppu.stat &= 0x7F;
-        ppu_update_stat(gb); /* a new source can fire straight away */
+        /*
+         * The obscure half of writing STAT: on a monochrome Game Boy the
+         * write is not taken at once.  Outside mode 3 and outside a LY==LYC
+         * coincidence, the register behaves as if $FF had been written for a
+         * single M-cycle, and only then does the real value land.
+         *
+         * That one M-cycle of all four interrupt sources selected is enough
+         * for the STAT line to go high, and an interrupt is raised from it.
+         * Two published games rely on this happening, and both fail on a
+         * Game Boy Color, which does not have the quirk.
+         */
+        if ((gb->ppu.lcdc & 0x80) && gb->ppu.mode != 3 &&
+            gb->ppu.ly != gb->ppu.lyc) {
+            /*
+             * Work out the interrupt line as it would be with every source
+             * selected, which is what that single M-cycle looks like, then
+             * put the real write off until the next tick.
+             */
+            uint8_t saved = gb->ppu.stat;
+
+            gb->ppu.stat |= 0x78;
+            ppu_update_stat(gb);
+            gb->ppu.stat = saved;
+
+            gb->ppu.stat_pending = (uint8_t)(value & 0x78);
+            gb->ppu.stat_delay = 1;
+        } else {
+            gb->ppu.stat = (uint8_t)((value & 0x78) | (gb->ppu.stat & 0x07));
+            gb->ppu.stat &= 0x7F;
+            ppu_update_stat(gb); /* a new source can fire straight away */
+        }
         break;
     case 0xFF42: gb->ppu.scy = value; break;
     case 0xFF43: gb->ppu.scx = value; break;
@@ -213,29 +243,6 @@ void io_write(GB *gb, uint16_t addr, uint8_t value)
 
 /* OAM DMA moves one byte every four T-cycles, so a full 160 byte transfer
  * occupies 640 T-cycles.  The CPU stays busy but can run other code. */
-void oamdma_tick(GB *gb, int cycles)
-{
-    OAMDMA *dma = &gb->oam_dma;
-
-    if (!dma->active)
-        return;
-
-    dma->cycles -= cycles;
-
-    while (dma->cycles < 0) {
-        dma->cycles += 4;
-        if (dma->index >= GB_OAM_SIZE)
-            break;
-        gb->oam[dma->index] = gb_read(gb, (uint16_t)(dma->src + dma->index));
-        dma->index++;
-    }
-
-    if (dma->index >= GB_OAM_SIZE) {
-        dma->active = false;
-        dma->index = 0;
-    }
-}
-
 void ppu_dma_start(GB *gb, uint8_t value)
 {
     gb->ppu.dma = value;

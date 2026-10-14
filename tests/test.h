@@ -80,6 +80,15 @@ void fixture_write(Fixture *f, uint16_t addr, const uint8_t *data, size_t len);
 void fixture_byte(Fixture *f, uint16_t addr, uint8_t value);
 void fixture_word(Fixture *f, uint16_t addr, uint16_t value);
 
+/*
+ * Switches the LCD off, which is how real code makes video memory reliably
+ * reachable: with the PPU powered down it fetches nothing, so VRAM and OAM
+ * belong to the CPU again.  Tests that set up tiles or objects want this,
+ * because otherwise their writes land while the PPU owns the bus and are
+ * correctly thrown away.
+ */
+void fixture_video_accessible(Fixture *f);
+
 /* Plants a program at $0100 and resets the CPU control state, leaving the
  * registers for the test to arrange.  Then run `steps` instructions. */
 void fixture_load(Fixture *f, const uint8_t *code, size_t len);
