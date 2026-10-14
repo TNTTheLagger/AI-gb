@@ -373,14 +373,12 @@ static int service_interrupt(GB *gb)
     uint8_t pending = (uint8_t)(gb->iflag & gb->ie & 0x1F);
     int bit = 0;
     /*
-     * Indexed by interrupt flag bit.  Note the order: the LCD status
-     * interrupt is bit 1 but lives at $0040, one vector *below* VBlank,
-     * which is bit 0 at $0048.  The two are adjacent in the wrong
-     * order, so this table is not the flag order written out.
+     * Indexed by interrupt flag bit.  Each vector is $0040 + 8 * bit, so
+     * VBlank (bit 0) is at $0040 and LCD status (bit 1) at $0048.
      */
     static const uint16_t vectors[5] = {
-        0x0048, /* 0: VBlank    */
-        0x0040, /* 1: LCD STAT  */
+        0x0040, /* 0: VBlank    */
+        0x0048, /* 1: LCD STAT  */
         0x0050, /* 2: timer     */
         0x0058, /* 3: serial    */
         0x0060, /* 4: joypad    */

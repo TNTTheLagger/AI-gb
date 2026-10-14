@@ -309,11 +309,10 @@ are checked on every build without needing the document.
 
 That pass turned up several faults, each of which is now covered by a test:
 
-* The interrupt vector table had VBlank and LCD status **transposed**. VBlank
-  is flag bit 0 but lives at `$0048`, while LCD status is flag bit 1 and lives
-  at `$0040`, *below* it — so every game was entering its LCD status handler
-  when its VBlank fired, and vice versa. This is the fault that kept Tetris
-  parked in its intro.
+* The interrupt vector table had VBlank and LCD status **transposed**. Each
+  vector is `$0040 + 8 * bit`: VBlank (flag bit 0) is at `$0040` and LCD
+  status (flag bit 1) at `$0048`. With the two swapped, every game entered
+  its LCD status handler when its VBlank fired, and vice versa.
 * The noise channel's four sound registers were decoded one address low:
   `$FF22` was treated as NR44, so writing NR43 triggered the channel and
   writing NR44 did nothing.
@@ -444,36 +443,11 @@ waveform.
 ## Where it stands against a commercial ROM
 
 The demo ROM and the unit tests exercise the hardware, but a real cartridge
-is a harsher test. Tetris (Rev. 01) loads and runs. Its VBlank handler
-executes every frame, its interrupt vectors are rewritten and dispatched to
-correctly, and its main loop runs a proper VBlank handshake through `$FF85`.
-
-It gets through most of the intro: the background comes up, the logo's tile
-map is written, the RLE decompressor that unpacks the logo tiles runs to
-completion and fills VRAM, and the intro state variable at `$FF98` climbs
-through 1, 3, 5 to 9. The logo itself is drawn in pieces rather than whole,
-and the screen then sits still.
-
-The fault that used to stop it dead — before the vector table was fixed the
-framebuffer froze at frame 4 and `$FF98` never left 1 — was the transposed
-VBlank and LCD status vectors. The main loop's VBlank handshake is gated on
-an LCD status interrupt, and with the two swapped it was never taken, so the
-loop spun forever on `$FF85`. Fixing that moved the game from frame 4 to
-frame 14 and set the state variable moving; what remains is the logo art
-itself, not the state machine.
-
-What the state machine is doing is now clear. The intro variable at `$FF98`
-reaches 9 and stays there, and the run length decoder that unpacks the logo
-is invoked about thirteen times a frame and completes every time — so it is
-drawing the logo a tile at a time rather than hanging. But it keeps being
-invoked, redraws the same tiles, and the screen stops changing.
-
-So the remaining fault is not the decoder, and not the state machine losing
-an interrupt. It is whatever should stop the decoder being called again. The
-references were re-read for it, and everything they specify about this area
-is now implemented and tested: the interrupt vectors, video memory locking,
-the `STAT` write quirk, the DMA address decoding, the post-boot values and
-the mode 3 length. None of them moved this title any further.
+is a harsher test. Earlier Tetris (Rev. 01) results were taken while the
+VBlank and LCD status vectors were swapped, so they no longer describe this
+code and need to be re-measured. Tetris runs its game logic from the VBlank
+handler at `$0040`, so that swap alone would explain an intro that stalls or
+draws in pieces.
 
 Everything checked against the two references matches: 256 instruction
 timings, the opcode and CB opcode tables, the sound register addresses, the

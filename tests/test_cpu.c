@@ -964,8 +964,8 @@ static void t_cpu_interrupt_is_taken_when_enabled(void)
     f.gb.iflag = GB_INT_VBLANK;
 
     CHECK_EQ(fixture_step(&f), 20);
-    CHECK_MSG(REG_PC == 0x0048,
-              "VBlank is flag bit 0 but its vector is $0048, not $0040");
+    CHECK_MSG(REG_PC == 0x0040,
+              "VBlank is flag bit 0 and its vector is $0040, not $0048");
     CHECK_EQ(f.gb.iflag & GB_INT_VBLANK, 0);
     CHECK_EQ(f.gb.cpu.ime, false);        /* hardware clears IME */
     CHECK_EQ(REG_SP, 0xFFFC);
@@ -1001,7 +1001,7 @@ static void t_cpu_interrupt_priority_order(void)
     f.gb.iflag = GB_INT_VBLANK | GB_INT_TIMER;
 
     fixture_step(&f);
-    CHECK_EQ(REG_PC, 0x0048);
+    CHECK_EQ(REG_PC, 0x0040);
     CHECK_EQ(f.gb.iflag & GB_INT_VBLANK, 0);
     CHECK_EQ(f.gb.iflag & GB_INT_TIMER, GB_INT_TIMER);
     fixture_destroy(&f);
