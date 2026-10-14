@@ -114,7 +114,7 @@ static void t_integ_vblank_interrupt_runs_a_handler(void)
     };
 
     load_program(&f, main_prog, sizeof(main_prog));
-    fixture_write(&f, 0x0048, handler, sizeof(handler)); /* VBlank vector */
+    fixture_write(&f, 0x0040, handler, sizeof(handler)); /* VBlank vector */
 
     for (int i = 0; i < 10; i++)
         gb_run_frame(&f.gb);
@@ -143,7 +143,7 @@ static void t_integ_halt_loop_waits_for_vblank(void)
     };
 
     load_program(&f, main_prog, sizeof(main_prog));
-    fixture_write(&f, 0x0048, handler, sizeof(handler)); /* VBlank vector */
+    fixture_write(&f, 0x0040, handler, sizeof(handler)); /* VBlank vector */
 
     for (int i = 0; i < 5; i++)
         gb_run_frame(&f.gb);
@@ -154,9 +154,8 @@ static void t_integ_halt_loop_waits_for_vblank(void)
 }
 
 /*
- * The VBlank and LCD status vectors sit either side of each other in the
- * wrong order: VBlank is flag bit 0 but lives at $0048, while LCD status is
- * flag bit 1 and lives at $0040, below it.  Handing the two vectors
+ * The VBlank and LCD status vectors are adjacent: VBlank is flag bit 0 at
+ * $0040, LCD status is flag bit 1 at $0048.  Handing the two vectors
  * different handlers is the only way to notice if they are ever transposed,
  * which is otherwise a silent misdispatch.
  */
@@ -171,7 +170,7 @@ static void t_integ_each_interrupt_reaches_its_own_vector(void)
         0x76,                   /* HALT                             */
         0x18, 0xFC              /* JR -2 -> the HALT                */
     };
-    /* $0040 is LCD status, $0048 is VBlank.  Each writes its own mark. */
+    /* $0040 is VBlank, $0048 is LCD status.  Each writes its own mark. */
     const uint8_t stat_handler[] = {
         0x3E, 0xA0,             /* LD A,$A0                        */
         0xEA, 0x00, 0xC1,       /* LD ($C100),A                    */
@@ -184,17 +183,17 @@ static void t_integ_each_interrupt_reaches_its_own_vector(void)
     };
 
     load_program(&f, main_prog, sizeof(main_prog));
-    fixture_write(&f, 0x0040, stat_handler, sizeof(stat_handler));
-    fixture_write(&f, 0x0048, vblank_handler, sizeof(vblank_handler));
+    fixture_write(&f, 0x0040, vblank_handler, sizeof(vblank_handler));
+    fixture_write(&f, 0x0048, stat_handler, sizeof(stat_handler));
 
     for (int i = 0; i < 10; i++)
         gb_run_frame(&f.gb);
 
     CHECK_MSG(gb_read(&f.gb, 0xC101) == 0xB0,
-              "VBlank belongs at $0048 and should have written $B0, "
+              "VBlank belongs at $0040 and should have written $B0, "
               "got $%02X", gb_read(&f.gb, 0xC101));
     CHECK_MSG(gb_read(&f.gb, 0xC100) != 0xA0,
-              "LCD status belongs at $0040, so it must not have run here");
+              "LCD status belongs at $0048, so it must not have run here");
     fixture_destroy(&f);
 }
 
